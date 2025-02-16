@@ -1,0 +1,450 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# if (!require("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install(version = "3.16")
+# BiocManager::install(c("dada2","phyloseq" ))
+# install.packages(c("Biostrings", "ShortRead","ggplot2","reshape2","gridExtra"))
+# install.packages("tidyverse")
+# install.packages("dplyr")
+
+library(dada2);packageVersion("dada2")
+library(Biostrings); packageVersion("Biostrings")
+library(ShortRead); packageVersion("ShortRead")
+library(ggplot2); packageVersion("ggplot2")
+library(reshape2); packageVersion("reshape2")
+library(gridExtra); packageVersion("gridExtra")
+library(phyloseq); packageVersion("phyloseq")
+library(tidyverse)
+library(dplyr)
+```
+
+```{r load data}
+path1 <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01" # CHANGE ME to location of the Second Replicate fastq files
+path.out <- "C:/Users/justi/Downloads/CGmite_barcode01/FiguresDuplex" # same as above
+path.rds <- "C:/Users/justi/Downloads/CGmite_barcode01/RDSduplex" # same as above
+fns1 <- list.files(path1, pattern="fastq", full.names=TRUE)
+CO1consensusF <- "RKTCAACMAATCATAAAGATATTGG" # CHANGE ME to your primer sequences
+CO1consensusR <- "TAAACTTCWGGRTGWCCAAAAAWY" #same as above
+rc <- dada2:::rc
+theme_set(theme_bw())
+genusPalette <- c(Bacillus="#e41a1c", Enterococcus="#377eb8", Escherichia="#4daf4a", Lactobacillus="#984ea3",
+                  Listeria="#ff7f00", Pseudomonas="#ffff33", Salmonella="#a65628", Staphylococcus="#f781bf")
+
+allOrients <- function(primer) {
+    # Create all orientations of the input sequence
+    require(Biostrings)
+    dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+    orients <- c(Forward = dna, Complement = Biostrings::complement(dna), Reverse = Biostrings::reverse(dna),
+        RevComp = Biostrings::reverseComplement(dna))
+    return(sapply(orients, toString))  # Convert back to character vector
+}
+FWD.orients <- allOrients(CO1consensusF)
+REV.orients <- allOrients(CO1consensusR)
+FWD.orients
+REV.orients
+```
+
+##remove primers and filter
+
+Initially used 
+>prim1 <- removePrimers(fns1, nops1, primer.fwd=F27, primer.rev=dada2:::rc(R1391), orient=TRUE)
+
+which removed 99% of data
+
+```{r clean, echo=FALSE}
+
+
+
+nops1 <- file.path(path1, "noprimers", basename(fns1))
+
+
+prim3 <- removePrimers(fns1, nops1, primer.fwd=CO1consensusF, primer.rev=dada2:::rc(CO1consensusR), orient=TRUE, max.mismatch=1)
+
+
+primerHits <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nhits > 0))
+}
+
+# checking number of primer hits on Gut Microbiome mock community
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = nops1), FWD.ReverseReads = sapply(FWD.orients,
+    primerHits, fn = nops1), REV.ForwardReads = sapply(REV.orients, primerHits,
+    fn = nops1))
+
+
+
+filts1 <- file.path(path1, "noprimers", "filtered", basename(fns1))
+##doesn't work
+if (length(filts1) >= 1 && file.exists(filts1[1])) {
+    plotQualityProfile(filts1[1])
+    ggsave(filename = "filteredCGmiteBarcode01.pdf")
+} else {
+    print("Error: No valid filtered FASTQ files found.")
+}
+# ggsave(filename = "primerQualityMock.pdf")
+# plotQualityProfile(filts1)
+# ggsave(filename = "primerQualityControls.pdf")
+
+lens.fn <- lapply(filts1, function(fn) nchar(getSequences(fn)))
+lens <- do.call(c, lens.fn)
+hist(lens, 100)
+track1 <- filterAndTrim(nops1, filts1, minQ=2, minLen=5, maxLen=3000, maxN=0, rm.phix=FALSE, maxEE=10)
+
+# # checking number of primer hits on Gut Microbiome mock community after cleaning
+# 
+# rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = filts1[[3]]), FWD.ReverseReads = sapply(FWD.orients,
+#     primerHits, fn = filts1[[3]]), REV.ForwardReads = sapply(REV.orients, primerHits,
+#     fn = filts1[[3]]))
+
+track1
+
+plotQualityProfile(filts1[1])
+ggsave(filename = "filteredCGmiteBarcode01.pdf")
+plotQualityProfile(filts1)
+ggsave(filename = "filteredCGmiteBarcode01QualityControls.pdf")
+
+```
+
+cutadapt
+
+```{r}
+path <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01"
+path.cut <- file.path(path, "cutadapt")
+
+if (!dir.exists(path.cut)) dir.create(path.cut, recursive = TRUE)
+
+fnFs <- list.files(path, pattern = "fastq.gz$", full.names = TRUE)
+
+cutadapt <- "cutadapt"
+
+fnFs.cut <- file.path(path.cut, basename(fnFs))
+
+if (length(fnFs) == 0) {
+    stop("Error: No FASTQ files found for trimming. Check input paths.")
+}
+
+FWD <- "RKTCAACMAATCATAAAGATATTGG"
+REV <- "TAAACTTCWGGRTGWCCAAAAAWY"
+FWD.RC <- dada2:::rc(FWD)
+REV.RC <- dada2:::rc(REV)
+
+cutadapt <- "C:/Users/justi/AppData/Local/Programs/Python/Python312/Scripts/cutadapt.exe"
+
+
+for (i in seq_along(fnFs)) {
+    system2(cutadapt, args = c(
+        "-g", FWD, "-a", REV.RC, "-n", 2,
+        "--minimum-length", 100,  
+        "--max-n", 1,  
+        "-q", "10,10",  
+        "--discard-untrimmed",
+        "-o", fnFs.cut[i], fnFs[i]
+    ))
+}
+
+
+print("Cutadapt trimming completed successfully!")
+
+```
+
+compare
+```{r}
+path <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01"
+trimmed_file <- file.path(path, "cutadapt", "Combined_barocde01.fastq.gz")  
+
+plotQualityProfile(trimmed_file)
+```
+
+```{r dada2}
+# Define paths to trimmed FASTQ files
+path.trimmed <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/cutadapt"
+trimmed_files <- list.files(path.trimmed, pattern="fastq.gz$", full.names=TRUE)
+
+# Ensure trimmed files exist
+if (length(trimmed_files) == 0) {
+    stop("Error: No trimmed FASTQ files found. Check trimming step.")
+}
+
+# Assign to `filts1` for use in DADA2
+filts1 <- trimmed_files
+
+
+library(dada2)
+library(ggplot2)
+
+# Ensure output directory exists
+dir.create(path.rds, showWarnings = FALSE, recursive = TRUE)
+
+# Dereplicate the trimmed reads
+drp <- derepFastq(filts1, verbose=TRUE)
+
+# Learn error rates
+err1 <- learnErrors(drp, errorEstimationFunction=PacBioErrfun, BAND_SIZE=32, multithread=TRUE)
+ggsave("duplexerrors.CGmitebarcode01.pdf")
+
+# Denoise using DADA2
+dd1 <- dada(drp, err=err1, BAND_SIZE=32, multithread=TRUE)
+saveRDS(dd1, file.path(path.rds, "duplexcontrols.CGmitebarcode01_dd1.rds"))
+
+# Create sequence table
+st1 <- makeSequenceTable(dd1)
+print(dim(st1))  # Show dimensions of sequence table
+
+# Assign taxonomy
+tax1 <- assignSpecies(st1, "C:/Users/justi/Downloads/ref_seqs_final.fasta")  # Slowest part
+head(unname(tax1))
+
+# Check for chimeras
+bim1 <- isBimeraDenovo(st1, minFoldParentOverAbundance=3.5)
+table(bim1)
+
+# Save results
+saveRDS(st1, file.path(path.rds, "controls.CGmitebarcode01.rds"))
+saveRDS(tax1, file.path(path.rds, "controls.CGmitebarcode01_Carlos.rds"))
+
+```
+
+
+```{r rerun lower maxee}
+
+path.trimmed <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/cutadapt"
+path.filtered <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/filtered"
+
+# Ensure output directory exists
+if (!dir.exists(path.filtered)) dir.create(path.filtered, recursive = TRUE)
+
+# Define input and output FASTQ files
+fnFs <- list.files(path.trimmed, pattern="fastq.gz$", full.names=TRUE)
+fnFs.filt <- file.path(path.filtered, basename(fnFs))  # Output files in filtered directory
+
+# Ensure files exist before proceeding
+if (length(fnFs) == 0) {
+    stop("Error: No trimmed FASTQ files found. Check trimming step.")
+}
+
+# Filtering with lower maxEE
+track2 <- filterAndTrim(fnFs, fnFs.filt, minQ=2, minLen=300, maxLen=2000, maxN=0, rm.phix=FALSE, maxEE=3)  # Lowered maxEE
+
+# Print filtering summary
+print(track2)
+
+# Checking number of primer hits **after filtering**
+if (length(fnFs.filt) >= 3) {
+    primer_counts <- rbind(
+        FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filt[[3]]),
+        FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnFs.filt[[3]]),
+        REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filt[[3]])
+    )
+    print(primer_counts)
+} else {
+    print("Warning: Not enough filtered files for primer hit analysis.")
+}
+
+# Generate quality profile plots for filtered sequences
+if (length(fnFs.filt) >= 3) {
+    plotQualityProfile(fnFs.filt[1:3])
+    ggsave(filename = "filtered_quality_mock.pdf", width = 8, height = 5)
+} else {
+    print("Warning: Not enough filtered files for quality plots.")
+}
+
+plotQualityProfile(fnFs.filt)
+ggsave(filename = "filtered_quality_controls.pdf", width = 8, height = 5)
+
+```
+
+
+```{r dada2}
+
+path.filtered <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/filtered"
+path.rds <- "C:/Users/justi/Downloads/CGmite_barcode01/RDS"
+
+# Ensure output directory exists
+if (!dir.exists(path.rds)) dir.create(path.rds, recursive = TRUE)
+
+# Define input FASTQ files
+filts1 <- list.files(path.filtered, pattern="fastq.gz$", full.names=TRUE)
+
+# Ensure files exist before proceeding
+if (length(filts1) == 0) {
+    stop("Error: No filtered FASTQ files found. Check filtering step.")
+}
+
+# Dereplicate filtered sequences
+drp2 <- derepFastq(filts1, verbose=TRUE)
+
+# Learn errors
+err2 <- learnErrors(drp2, errorEstimationFunction=PacBioErrfun, BAND_SIZE=32, multithread=TRUE)
+saveRDS(err2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_err1.rds"))
+
+# Plot error rates
+plotErrors(err2)
+ggsave("duplexerrors.CGmitebarcode01.pdf", width = 8, height = 5)
+
+# Denoise using DADA2
+dd2 <- dada(drp2, err=err2, BAND_SIZE=32, multithread=TRUE)
+saveRDS(dd2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_dd1.rds"))
+
+# Check read counts at each step
+track_table <- data.frame(
+    sample = basename(filts1),  # Extract sample names
+    filtered = sapply(filts1, function(x) length(getSequences(x))),  # Number of reads after filtering
+    denoised = sapply(dd2, function(x) if (inherits(x, "dada")) sum(x$denoised) else NA)  # Handle atomic vectors
+)
+
+# Print tracking summary
+print(track_table)
+
+
+# Create sequence table
+st2 <- makeSequenceTable(dd2)
+print(dim(st2))  # Show dimensions of sequence table
+
+# Assign taxonomy
+tax2 <- assignSpecies(st2, "C:/Users/justi/Downloads/ref_seqs_final.fasta")  # Slowest part
+head(unname(tax2))
+
+# Check for chimeras
+bim2 <- isBimeraDenovo(st2, minFoldParentOverAbundance=3.5)
+table(bim2)
+
+# Save results
+saveRDS(st2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_st2.rds"))
+saveRDS(tax2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_Carlos.rds"))
+```
+
+
+```{r rerun higher maxee}
+
+# Define paths
+path.trimmed <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/cutadapt"
+path.filtered <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/filtered"
+
+# Ensure output directory exists
+if (!dir.exists(path.filtered)) dir.create(path.filtered, recursive = TRUE)
+
+# Define input and output FASTQ files
+fnFs <- list.files(path.trimmed, pattern="fastq.gz$", full.names=TRUE)
+fnFs.filt <- file.path(path.filtered, basename(fnFs))  # Output files in filtered directory
+
+# Ensure files exist before proceeding
+if (length(fnFs) == 0) {
+    stop("Error: No trimmed FASTQ files found. Check trimming step.")
+}
+
+# Filtering with higher maxEE (allowing more errors)
+track2 <- filterAndTrim(fnFs, fnFs.filt, minQ=2, minLen=500, maxLen=2000, maxN=0, rm.phix=FALSE, maxEE=15)
+
+# Print filtering summary
+print(track2)
+
+# Checking number of primer hits **after filtering**
+if (length(fnFs.filt) >= 3) {
+    primer_counts <- rbind(
+        FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filt[[3]]),
+        FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnFs.filt[[3]]),
+        REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filt[[3]])
+    )
+    print(primer_counts)
+} else {
+    print("Warning: Not enough filtered files for primer hit analysis.")
+}
+
+# Generate quality profile plots for filtered sequences
+if (length(fnFs.filt) >= 20) {
+    plotQualityProfile(fnFs.filt[18:20])
+    ggsave(filename = "duplexCGmitebarcode01filteredQualityMock.pdf", width = 8, height = 5)
+} else {
+    print("Warning: Not enough filtered files for subset quality plots.")
+}
+
+plotQualityProfile(fnFs.filt)
+ggsave(filename = "duplexCGmitebarcode01filteredQualityControls.pdf", width = 8, height = 5)
+
+```
+
+```{r dada2 ee5}
+path.filtered <- "C:/Users/justi/Downloads/CGmite_barcode01/combined_barcode01/filtered"
+path.rds <- "C:/Users/justi/Downloads/CGmite_barcode01/RDS"
+
+# Ensure output directory exists
+if (!dir.exists(path.rds)) dir.create(path.rds, recursive = TRUE)
+
+# Define input FASTQ files
+filts1 <- list.files(path.filtered, pattern="fastq.gz$", full.names=TRUE)
+
+# Ensure files exist before proceeding
+if (length(filts1) == 0) {
+    stop("Error: No filtered FASTQ files found. Check filtering step.")
+}
+
+# Dereplicate filtered sequences
+drp2 <- derepFastq(filts1, verbose=TRUE)
+
+# Learn errors
+err2 <- learnErrors(drp2, errorEstimationFunction=PacBioErrfun, BAND_SIZE=32, multithread=TRUE)
+saveRDS(err2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_err2.rds"))
+
+# Plot error rates
+plotErrors(err2)
+ggsave("duplexerrors.CGmitebarcode01.pdf", width = 8, height = 5)
+
+# Denoise using DADA2
+dd2 <- dada(drp2, err=err2, BAND_SIZE=32, multithread=TRUE)
+saveRDS(dd2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_dd2.rds"))
+
+# Check read counts at each step
+track_table <- data.frame(
+    sample = basename(filts1),  # Extract sample names
+    filtered = sapply(filts1, function(x) length(getSequences(x))),  # Reads after filtering
+    denoised = sapply(dd2, function(x) if (inherits(x, "dada")) sum(x$denoised) else NA)  # Reads after denoising
+)
+print(track_table)
+
+# Create sequence table
+st2 <- makeSequenceTable(dd2)
+print(dim(st2))  # Show dimensions of sequence table
+
+# Assign taxonomy
+tax2 <- assignSpecies(st2, "C:/Users/justi/Downloads/ref_seqs_final.fasta")  # Slowest part
+head(unname(tax2))
+
+# Check for chimeras
+bim2 <- isBimeraDenovo(st2, minFoldParentOverAbundance=3.5)
+table(bim2)
+
+# Save results
+saveRDS(st2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_st2.rds"))
+saveRDS(tax2, file.path(path.rds, "duplexcontrols.CGmitebarcode01_Carlos.rds"))
+```
+
+```{r}
+taxa <- assignSpecies(seqtab.nochim, "C:/Users/justi/Downloads/ref_seqs_final.fasta", tryRC=TRUE)
+# Reverse complement sequences safely
+seqs_rc <- dada2:::rc(colnames(seqtab.nochim))  # Reverse complement sequence names
+seqtab.nochim.rc <- seqtab.nochim  # Copy the original table
+colnames(seqtab.nochim.rc) <- seqs_rc  # Replace sequence names with reverse complement
+taxa1 <- assignSpecies(seqtab.nochim, "C:/Users/justi/Downloads/ref_seqs_final.fasta")
+taxa2 <- assignSpecies(seqtab.nochim.rc, "C:/Users/justi/Downloads/ref_seqs_final.fasta")
+# Replace missing assignments in taxa1 with results from taxa2
+taxa_combined <- taxa1
+missing <- is.na(taxa1[, "Species"])  # Find missing species
+taxa_combined[missing, ] <- taxa2[missing, ]  # Fill missing species
+
+# Print final taxonomy assignments
+head(taxa_combined)
+
+
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+
+
+```
